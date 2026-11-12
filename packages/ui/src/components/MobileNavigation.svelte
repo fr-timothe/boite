@@ -3,7 +3,7 @@
   import WindowList from './WindowList.svelte';
   import MobileTabs from './MobileTabs.svelte';
   import ThreadHeader from './ThreadHeader.svelte';
-  import { Activity, Archive, ArrowLeft, ArrowUpDown, ChevronDown, Ellipsis, Folder, FolderOpen, FolderPlus, MessageSquare, Pin, PinOff, Plus, Search, Radar, X } from '@lucide/svelte';
+  import { Activity, Archive, ArrowLeft, ArrowUpDown, ChevronDown, Ellipsis, Folder, FolderOpen, FolderPlus, MessageSquare, Pin, PinOff, Plus, Search, Radar, Tag, X } from '@lucide/svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import MobileConnect from './MobileConnect.svelte';
   import type { Store } from '../lib/store.svelte';
@@ -31,6 +31,8 @@
   import ProjectThreadCounters from './ProjectThreadCounters.svelte';
   import ProjectShelf from './ProjectShelf.svelte';
   import ProjectCardsSection from './ProjectCardsSection.svelte';
+  import TagSection from './TagSection.svelte';
+  import { groupedKey, tagFilterItems, tagGroups, tagLabel, type TagGroup } from '../lib/project-tags';
   import DraftRow from './DraftRow.svelte';
   import GroupLabel from './GroupLabel.svelte';
   import ProjectTile from './ProjectTile.svelte';
@@ -82,7 +84,7 @@
     if (!measuredRows.has(key)) measuredRows.set(key, new Map());
     return measuredRows.get(key)!;
   }
-  const listKey = $derived(`${listScreen}:${workspace.view}:${projectView.filter}`);
+  const listKey = $derived(`${listScreen}:${workspace.view}:${projectView.filter}:${projectView.tag}:${projectView.byTag}`);
   $effect(() => { if (narrow.current && scrollRoot) { const saved = scrollPositions.get(listKey) ?? 0; void tick().then(() => { if (scrollRoot) scrollRoot.scrollTop = saved; }); } });
   /** The clock the rows' times read: a minute's precision is all they show. */
   const now = $derived(minuteClock.now);
@@ -94,8 +96,13 @@
   let groups = $derived(projectView.sorted(machines.flatMap(machine => machine.store.projects.filter(project => !project.archived).map(project => ({ machine, project })))));
   /** At work on top when working grouping is on, open, then set aside; idle projects go to their fold, as on the desktop. */
   let sections = $derived(projectSections(groups, recentPreferences.groupOtherProjects, recentPreferences.groupWorking));
+  /** Grouped by tag, as on the desktop: a section per tag, untagged last, every project a card. */
+  let tagSections = $derived(projectView.byTag ? tagGroups(groups) : null);
   let shelved = $derived(machines.flatMap(machine => machine.store.projects.filter(project => project.archived === true).map(project => ({ machine, project }))));
   let selected = $derived(projectView.selected(groups));
+  /** The projects of the tag the filter chose, null when it chose none. */
+  let tagged = $derived(selected ? null : projectView.tagged(groups));
+  const chosenTag = $derived(tagged ? projectView.tag : null);
   let draftOwner = $derived(listScreen === 'threads' && workspace.view === 'recent' && selected ? selected.machine.store : store);
   let entries = $derived(machines.flatMap(machine => {
     const byId = new Map(machine.store.projects.map(p => [p.id, p]));
@@ -107,7 +114,7 @@
   let active = $derived(entries.filter(e => needsUser(e.thread) || ['running', 'queued'].includes(e.thread.status)));
   let rows = $derived((listScreen === 'activity' ? active : entries)
     .filter(e => !query || [e.thread.title, projectName(e.project), e.thread.branch, e.machine.label].some(value => value?.toLocaleLowerCase().includes(query)))
-    .filter(e => listScreen === 'activity' || (!e.thread.parentThreadId && !e.project?.archived && (workspace.view !== 'recent' || !selected || (e.machine.id === selected.machine.id && e.thread.projectId === selected.project.id))))
+    .filter(e => listScreen === 'activity' || (!e.thread.parentThreadId && !e.project?.archived && (workspace.view !== 'recent' || (!selected && !tagged) || recentGroups.some(group => e.machine.id === group.machine.id && e.thread.projectId === group.project.id))))
     .sort((a, b) => listScreen === 'activity'
       ? (Number(needsUser(b.thread)) - Number(needsUser(a.thread))) || b.thread.updatedAt - a.thread.updatedAt
       : compareThreads(a.thread, b.thread)));
@@ -118,10 +125,11 @@
   const inRecent = $derived(listScreen === 'threads' && workspace.view === 'recent');
   /** Recent shows one project or all of them: the filter's choices. */
   const filterItems = $derived([
-    { id: 'all', label: strings.sidebar.allProjects, active: !selected },
-    ...groups.map(entry => ({ id: projectKey(entry), label: projectName(entry.project), hint: several ? entry.machine.label : '', active: projectKey(entry) === projectView.filter, projectTile: { project: entry.project, store: entry.machine.store } }))
+    { id: 'all', label: strings.sidebar.allProjects, active: !selected && !chosenTag },
+    ...groups.map(entry => ({ id: projectKey(entry), label: projectName(entry.project), hint: several ? entry.machine.label : '', active: projectKey(entry) === projectView.filter, projectTile: { project: entry.project, store: entry.machine.store } })),
+    ...tagFilterItems(groups, chosenTag)
   ]);
-  const recentGroups = $derived(selected ? [selected] : groups);
+  const recentGroups = $derived(selected ? [selected] : tagged ?? groups);
   let workingOpen = $state(false);
   const groupWorking = $derived(inRecent && recentPreferences.groupWorking && !query);
   /** Recent's rows whose agent, sub-agents or background work are still going: the "at work" filter. */
@@ -252,7 +260,7 @@
         <div class="filters">
           {#if inRecent && groups.length}
             <Menu items={filterItems} onpick={key => projectView.pick(key)} label={strings.sidebar.filterProject} placement="bottom" variant="ghost" testid="mobile-project-filter">
-              {#if selected}<ProjectTile project={selected.project} store={selected.machine.store} size={16} />{:else}<Folder size={14} />{/if}<span class="ui-label">{selected ? projectName(selected.project) : strings.sidebar.allProjects}</span>{#if selected && several}<span class="filter-machine ui-label">{selected.machine.label}</span>{/if}<ChevronDown size={13} />
+              {#if selected}<ProjectTile project={selected.project} store={selected.machine.store} size={16} />{:else if chosenTag}<Tag size={14} />{:else}<Folder size={14} />{/if}<span class="ui-label">{selected ? projectName(selected.project) : chosenTag ? tagLabel(groups, chosenTag) : strings.sidebar.allProjects}</span>{#if selected && several}<span class="filter-machine ui-label">{selected.machine.label}</span>{/if}<ChevronDown size={13} />
             </Menu>
           {/if}
           {#if atWorkRows.length > 0}
@@ -285,7 +293,7 @@
       </div>
     {/snippet}
     {#if listScreen === 'threads' && workspace.view === 'projects'}
-      {#snippet projectRows(projects: ProjectEntry[], later = false)}
+      {#snippet projectRows(projects: ProjectEntry[], later = false, tag?: TagGroup)}
       {#each projects as group (projectKey(group))}
         {@const groupRows = rows.filter(row => row.machine.id === group.machine.id && row.thread.projectId === group.project.id)}
         {@const workingOpen = projectThreadView.isOpen(group, 'working')}
@@ -293,14 +301,14 @@
         {@const archivedOpen = archiveCount(group.project, 'archived') > 0 && (later || projectThreadView.isOpen(group, 'archived'))}
         {@const workingRows = groupRows.filter(row => workingThread(row.machine.store, row.thread))}
         {@const attentionRows = query || !recentPreferences.groupWorking ? groupRows : groupRows.filter(row => workingOpen ? !workingThread(row.machine.store, row.thread) : !groupWorkingThread(group.machine.store, row.thread))}
-        {@const controls = `mobile-project-${encodeURIComponent(projectKey(group))}`}
+        {@const controls = `mobile-project-${encodeURIComponent(tag ? groupedKey(tag, group) : projectKey(group))}`}
         {@const drafts = group.machine.store.draftEntries.filter(entry => entry.projectId === group.project.id)}
         {#if !query || groupRows.length > 0 || doneOpen || archivedOpen}
         <section class="project-group" class:inactive={!activeProject(group)} data-testid="mobile-project-group" data-project-id={group.project.id} data-machine-id={group.machine.id}>
           <div class="project-heading">
             <ProjectTile project={group.project} store={group.machine.store} /><h2>{projectName(group.project)}{#if several}<span>{group.machine.label}</span>{/if}</h2>
             <ProjectThreadCounters entry={group} working={group.machine.store.threadsOf(group.project.id).filter(thread => workingThread(group.machine.store, thread)).length} {controls} searching={!!query} away={group.machine.store.connection !== 'ready'} body={later ? laterLists : undefined} />
-            {#if projectView.order === 'manual'}
+            {#if projectView.order === 'manual' && !projectView.byTag}
               <Menu items={[
                 { id: 'up', label: strings.sidebar.moveProjectUp, disabled: projectKey(foldOf(group)[0]!) === projectKey(group) },
                 { id: 'down', label: strings.sidebar.moveProjectDown, disabled: projectKey(foldOf(group).at(-1)!) === projectKey(group) }
@@ -336,6 +344,12 @@
       {/each}
       {/snippet}
       {#if query}{@render projectRows(groups)}
+      {:else if tagSections}
+        {#each tagSections as section (section.key)}
+          <TagSection tag={section.key} label={section.label} count={section.entries.length}>{@render projectRows(section.entries, false, section)}</TagSection>
+        {/each}
+        <ProjectShelf kind="archived" projects={shelved} multi={several} {now} {scrollRoot} onopen={() => show('chat')} />
+        {@render contacts()}
       {:else}
         {#if sections.working.length > 0}<ProjectCardsSection kind="working" count={sections.working.length}>{@render projectRows(sections.working)}</ProjectCardsSection>{/if}
         {@render projectRows(sections.open)}

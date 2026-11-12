@@ -128,6 +128,10 @@ retry after 30 s. Waiting for the WAL to catch up uses the same delay before
 any statistics or pruning work, without changing the batch size. Stopping
 retention or closing the journal prevents further ticks.
 Project removal explicitly clears thread-keyed tables; foreign keys are disabled.
+A project's tags live in the `tags` column of `projects`, a JSON array or NULL,
+written by `projects.setTags` with a `project.tagsChanged` event. The column is
+added without a schema bump, so an older core still opens the journal; it does
+not write the column, and its rename or archive of a project clears the tags.
 A newer journal schema is refused before writing, with the file and both versions.
 
 `message.part` and `artifact.published` events are not written: the message row
